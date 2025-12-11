@@ -310,7 +310,6 @@ impl SourceBuild {
             &source_tree,
             install_path,
             fallback_package_name,
-            fallback_package_version,
             locations,
             source_strategy,
             workspace_cache,
@@ -563,7 +562,6 @@ impl SourceBuild {
         source_tree: &Path,
         install_path: &Path,
         package_name: Option<&PackageName>,
-        package_version: Option<&Version>,
         locations: &IndexLocations,
         source_strategy: SourceStrategy,
         workspace_cache: &WorkspaceCache,
@@ -593,6 +591,10 @@ impl SourceBuild {
             Err(err) => return Err(Box::new(err.into())),
         };
 
+        let build_backend = pyproject_toml
+            .build_system
+            .as_ref()
+            .and_then(|build_backend| build_backend.build_backend.as_deref());
         if source_strategy == SourceStrategy::Enabled
             && pyproject_toml
                 .tool
@@ -600,24 +602,24 @@ impl SourceBuild {
                 .and_then(|tool| tool.uv.as_ref())
                 .map(|uv| uv.build_backend.is_some())
                 .unwrap_or(false)
-            && pyproject_toml
-                .build_system
-                .as_ref()
-                .and_then(|build_backend| build_backend.build_backend.as_deref())
-                != Some("uv_build")
+            && build_backend != Some("uv_build")
             && let Some(package_name) =
                 package_name.or(pyproject_toml.project.as_ref().map(|project| &project.name))
-            && let Some(package_version) = package_version.or(pyproject_toml
-                .project
-                .as_ref()
-                .and_then(|project| project.version.as_ref()))
         {
-            // Show name/version where available to avoid showing a (duplicate) warning with
-            // a temporary path.
-            warn_user_once!(
-                "`pyproject.toml` of {package_name}=={package_version} defines settings for \
-                `uv_build` in `tool.uv.build-backend`, but does not use `uv_build`",
-            );
+            // Show only the name, but not the path to `pyproject.toml`, to avoid showing a
+            // (duplicate) warning that contains the temporary path of an unpacked source
+            // distribution in a source tree -> source dist -> wheel build.
+            if let Some(build_backend) = build_backend {
+                warn_user_once!(
+                    "`{package_name}` defines settings for `uv_build` in `tool.uv.build-backend`, \
+                    but uses `{build_backend}` as build backend instead",
+                );
+            } else {
+                warn_user_once!(
+                    "`{package_name}` defines settings for `uv_build` in `tool.uv.build-backend`, \
+                    but the `build-system` table is missing",
+                );
+            }
         }
 
         let backend = if let Some(build_system) = pyproject_toml.build_system {
@@ -640,7 +642,8 @@ impl SourceBuild {
                             locations,
                             source_strategy,
                             workspace_cache,
-                        credentials_cache,)
+                            credentials_cache,
+                        )
                         .await
                         .map_err(Error::Lowering)?;
                         build_requires.requires_dist
